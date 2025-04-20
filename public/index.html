@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Family Tree</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.5/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.23.0/cytoscape.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    function App() {
+      const [user, setUser] = useState(null);
+      const [trees, setTrees] = useState([]);
+      const [selectedTree, setSelectedTree] = useState(null);
+      const [members, setMembers] = useState([]);
+      const [search, setSearch] = useState('');
+      const [searchResults, setSearchResults] = useState([]);
+      const [selectedMember, setSelectedMember] = useState(null);
+      const [formData, setFormData] = useState({ name: '', birthday: '', placeOfBirth: '', description: '' });
+      const [file, setFile] = useState(null);
+      const [newTreeName, setNewTreeName] = useState('');
+      const [showAuth, setShowAuth] = useState(false);
+      const [authForm, setAuthForm] = useState({ email: '', password: '' });
+      const [isSignup, setIsSignup] = useState(false);
+      const cyRef = React.useRef(null);
+
+      useEffect(() => {
+        fetchTrees();
+        checkUser();
+      }, []);
+
+      useEffect(() => {
+        if (selectedTree) {
+          fetchMembers(selectedTree.id);
+        }
+      }, [selectedTree]);
+
+      useEffect(() => {
+        if (members.length > 0 && selectedTree) {
+          initCytoscape();
+        }
+      }, [members]);
+
+      useEffect(() => {
+        if (search) {
+          setSearchResults(members.filter(m => m.name.toLowerCase().includes(search.toLowerCase())));
+        } else {
+          setSearchResults([]);
+        }
+      }, [search, members]);
+
+      const checkUser = async () => {
+        const token = localStorage.getItem('token');
+        if (token) {
+          const res = await fetch('http://localhost:3000/me', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) {
+            setUser(await res.json());
+          } else {
+            localStorage.removeItem('token');
+          }
+        }
+      };
+
+      const fetchTrees = async () => {
+        const res = await fetch('http://localhost:3000/trees');
+        const data = await res.json();
+        setTrees(data);
+        if (data.length > 0) setSelectedTree(data[0]);
+      };
+
+      const fetchMembers = async (treeId) => {
+        const res = await fetch(`http://localhost:3000/members?treeId=${treeId}`);
+        const data = await res.json();
+        setMembers(data);
+      };
+
+      const initCytoscape = () => {
+        if (cyRef.current) cyRef.current.destroy();
+        const cy = cytoscape({
+          container: document.getElementById('cy'),
+          elements: members.map(m => ({
+            data: { id: m.id, label: m.name, ...m }
+          })),
+          style: [
+            { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#4a90e2', 'color': '#fff', 'text-valign': 'center' } },
+            { selector: 'edge', style: { 'width': 2, 'line-color': '#ccc' } }
+          ],
+          layout: { name: 'dagre', rankDir: 'TB' },
+          zoom: 1,
+          minZoom: 0.5,
+          maxZoom: 2
+        });
+        cy.on('tap', 'node', (evt) => {
+          const member = evt.target.data();
+          setSelectedMember(member);
+        });
+        cyRef.current = cy;
+      };
+
+      const handleAuth = async (e) => {
+        e.preventDefault();
+        const endpoint = isSignup ? '/signup' : '/login';
+        const res = await fetch(`http://localhost:3000${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(authForm)
+        });
+        if (res.ok) {
+          const { token } = await res.json();
+          localStorage.setItem('token', token);
+          setUser({ email: authForm.email });
+          setShowAuth(false);
+          setAuthForm({ email: '', password: '' });
+        } else {
+          alert('Authentication failed');
+        }
+      };
+
+      const handleLogout = () => {
+        localStorage.removeItem('token');
+        setUser(null);
+      };
+
+      const handleAddTree = async (e) => {
+        e.preventDefault();
+        if (!user) return alert('Please log in');
+        const res = await fetch('http://localhost:3000/trees', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({ name: newTreeName })
+        });
+        if (res.ok) {
+          setNewTreeName('');
+          fetchTrees();
+        }
+      };
+
+      const handleAddMember = async (e) => {
+        e.preventDefault();
+        if (!user) return alert('Please log in');
+        const form = new FormData();
+        form.append('name', formData.name);
+        form.append('birthday', formData.birthday);
+        form.append('placeOfBirth', formData.placeOfBirth);
+        form.append('description', formData.description);
+        form.append('treeId', selectedTree.id);
+        if (file) form.append('file', file);
+
+        await fetch('http://localhost:3000/members', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          body: form
+        });
+        setFormData({ name: '', birthday: '', placeOfBirth: '', description: '' });
+        setFile(null);
+        fetchMembers(selectedTree.id);
+      };
+
+      return (
+        <div className="p-4">
+          <div className="flex justify-between mb-4">
+            <h1 className="text-2xl font-bold">Family Tree</h1>
+            {user ? (
+              <div>
+                <span className="mr-2">{user.email}</span>
+                <button onClick={handleLogout} className="bg-red-500 text-white p-2 rounded">Logout</button>
+              </div>
+            ) : (
+              <button onClick={() => setShowAuth(true)} className="bg-blue-500 text-white p-2 rounded">Login/Signup</button>
+            )}
+          </div>
+          <div className="mb-4">
+            <select
+              value={selectedTree?.id || ''}
+              onChange={(e) => setSelectedTree(trees.find(t => t.id === parseInt(e.target.value)))}
+              className="border p-2"
+            >
+              {trees.map(tree => (
+                <option key={tree.id} value={tree.id}>{tree.name}</option>
+              ))}
+            </select>
+            {user && (
+              <form onSubmit={handleAddTree} className="inline-block ml-2">
+                <input
+                  type="text"
+                  placeholder="New tree name"
+                  value={newTreeName}
+                  onChange={(e) => setNewTreeName(e.target.value)}
+                  className="border p-2"
+                  required
+                />
+                <button type="submit" className="bg-green-500 text-white p-2 rounded ml-2">Add Tree</button>
+              </form>
+            )}
+          </div>
+          <input
+            type="text"
+            placeholder="Search by name"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="border p-2 mb-4 w-full"
+          />
+          {searchResults.length > 0 && (
+            <ul className="border p-2 mb-4 max-h-40 overflow-auto">
+              {searchResults.map(m => (
+                <li
+                  key={m.id}
+                  onClick={() => setSelectedMember(m)}
+                  className="cursor-pointer hover:bg-gray-100 p-1"
+                >
+                  {m.name}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div id="cy" className="w-full h-96 border"></div>
+          {user && (
+            <div className="mt-4">
+              <h2 className="text-xl font-semibold">Add Family Member</h2>
+              <form onSubmit={handleAddMember} className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Name"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  className="border p-2 w-full"
+                  required
+                />
+                <input
+                  type="date"
+                  placeholder="Birthday"
+                  value={formData.birthday}
+                  onChange={(e) => setFormData({ ...formData, birthday: e.target.value })}
+                  className="border p-2 w-full"
+                />
+                <input
+                  type="text"
+                  placeholder="Place of Birth"
+                  value={formData.placeOfBirth}
+                  onChange={(e) => setFormData({ ...formData, placeOfBirth: e.target.value })}
+                  className="border p-2 w-full"
+                />
+                <textarea
+                  placeholder="Description"
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  className="border p-2 w-full"
+                />
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={(e) => setFile(e.target.files[0])}
+                  className="border p-2 w-full"
+                />
+                <button type="submit" className="bg-blue-500 text-white p-2 rounded">Add Member</button>
+              </form>
+            </div>
+          )}
+          {selectedMember && (
+            <div className="mt-4 p-4 border">
+              <h2 className="text-xl font-semibold">{selectedMember.name}</h2>
+              <p>Birthday: {selectedMember.birthday || 'N/A'}</p>
+              <p>Place of Birth: {selectedMember.placeOfBirth || 'N/A'}</p>
+              <p>Description: {selectedMember.description || 'N/A'}</p>
+              {selectedMember.files && selectedMember.files.map(file => (
+                <a key={file.id} href={`http://localhost:3000/members/${selectedMember.id}/files/${file.id}`} target="_blank" className="block text-blue-500">
+                  {file.filename}
+                </a>
+              ))}
+            </div>
+          )}
+          {showAuth && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+              <div className="bg-white p-4 rounded">
+                <h2 className="text-xl font-semibold mb-2">{isSignup ? 'Sign Up' : 'Login'}</h2>
+                <form onSubmit={handleAuth} className="space-y-2">
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+                    className="border p-2 w-full"
+                    required
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+                    className="border p-2 w-full"
+                    required
+                  />
+                  <button type="submit" className="bg-blue-500 text-white p-2 rounded w-full">
+                    {isSignup ? 'Sign Up' : 'Login'}
+                  </button>
+                </form>
+                <button
+                  onClick={() => setIsSignup(!isSignup)}
+                  className="text-blue-500 mt-2"
+                >
+                  {isSignup ? 'Switch to Login' : 'Switch to Sign Up'}
+                </button>
+                <button
+                  onClick={() => setShowAuth(false)}
+                  className="text-red-500 mt-2 ml-2"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
